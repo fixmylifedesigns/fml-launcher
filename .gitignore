@@ -1,0 +1,10 @@
+build/
+*.elf
+*.map
+*.o
+*.d
+/cubelaunch.dol
+/cubelaunch-demo.dol
+/cubelaunch.uf2
+__pycache__/
+tools/testapp/testapp.dol

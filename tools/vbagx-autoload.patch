@@ -1,0 +1,39 @@
+diff --git a/source/vbagx.cpp b/source/vbagx.cpp
+index 44148b8..c612f35 100644
+--- a/source/vbagx.cpp
++++ b/source/vbagx.cpp
+@@ -99,9 +99,12 @@ int main(int argc, char *argv[])
+ 
+ 	InitGUI();
+ 
+-#ifdef HW_RVL
++#if defined(HW_RVL) || defined(HW_DOL)
++	// A launcher can pass argv[1] = ROM folder ("sd:/roms/", or on GameCube
++	// "port2:/", "carda:/", "cardb:/") and argv[2] = ROM file name to start it directly.
+ 	if(argc > 2 && argv[1] != nullptr && argv[2] != nullptr) {
+ 		LoadPrefs();
++#ifdef HW_RVL
+ 		if(strncmp(argv[1], "sd", 2) == 0)
+ 		{
+ 			EmuSettings.saveDevice = DEVICE_SD;
+@@ -112,6 +115,20 @@ int main(int argc, char *argv[])
+ 			EmuSettings.saveDevice = DEVICE_USB;
+ 			EmuSettings.loadDevice = DEVICE_USB;
+ 		}
++#else
++		int device = -1;
++		if(strncmp(argv[1], "port2", 5) == 0)
++			device = DEVICE_SD_PORT2;
++		else if(strncmp(argv[1], "carda", 5) == 0)
++			device = DEVICE_SD_SLOTA;
++		else if(strncmp(argv[1], "cardb", 5) == 0)
++			device = DEVICE_SD_SLOTB;
++		if(device >= 0)
++		{
++			EmuSettings.saveDevice = device;
++			EmuSettings.loadDevice = device;
++		}
++#endif
+ 		SavePrefs();
+ 
+ 		EmuSettings.autoloadGame = AutoloadGame(argv[1], argv[2]);
