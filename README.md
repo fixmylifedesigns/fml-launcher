@@ -33,6 +33,8 @@ from Settings (Y).
   media player style window: playlist, ID3 tags, frequency bars, shuffle, repeat, seek and
   volume. Music keeps playing on the shelf after you close it.
   Album covers come from the picture in the MP3, or a `Folder.jpg` / `cover.jpg` next to it.
+  The font has no Japanese, so an `fml-titles.txt` next to the songs can give them readable
+  titles, one `file name.mp3 = Title` per line (UTF-8).
 - Movie Player app: plays MPEG-1 `.mpg` videos with sound. Other formats are listed as
   "needs converting": run `python tools/make_movie.py video.mp4` (needs ffmpeg) to make one.
   Videos are shown by folder, so TV shows can go in

@@ -102,6 +102,8 @@ static void put_char(char *out, int *o, int n, u32 cp)
 		out[(*o)++] = latin1[cp - 0xC0];
 	else if (cp == 0x2019 || cp == 0x2018)
 		out[(*o)++] = '\'';
+	else if (cp == 0x201C || cp == 0x201D)
+		out[(*o)++] = '"';
 	else if (cp == 0x2013 || cp == 0x2014)
 		out[(*o)++] = '-';
 	else if (cp >= 0xA0)
@@ -233,6 +235,64 @@ static void title_from_name(Track *t)
 	}
 }
 
+static u8 *read_file(const char *path, u32 *len);
+
+// Titles from an fml-titles.txt next to the songs, one "file name = title" per
+// line (UTF-8), for songs whose own titles the font can't show (e.g. Japanese).
+static char titles_dir[256];
+static char *titles_text;
+
+static void title_from_list(Track *t)
+{
+	const char *path = t->file->path, *name = strrchr(path, '/') + 1;
+	int dir_len = name - path;
+	if (dir_len >= (int)sizeof(titles_dir))
+		return;
+	if (strncmp(titles_dir, path, dir_len) || titles_dir[dir_len]) {
+		snprintf(titles_dir, sizeof(titles_dir), "%.*s", dir_len, path);
+		free(titles_text);
+		titles_text = NULL;
+		char p[300];
+		u32 len;
+		snprintf(p, sizeof(p), "%sfml-titles.txt", titles_dir);
+		u8 *data = read_file(p, &len);
+		if (data && (titles_text = realloc(data, len + 1)))
+			titles_text[len] = 0;
+		else
+			free(data);
+	}
+	if (!titles_text)
+		return;
+	int name_len = strlen(name);
+	for (const char *line = titles_text; *line;) {
+		const char *end = strchr(line, '\n');
+		if (!end)
+			end = line + strlen(line);
+		const char *eq = memchr(line, '=', end - line);
+		if (line[0] == (char)0xEF && line[1] == (char)0xBB && line[2] == (char)0xBF)
+			line += 3; // byte order mark
+		if (eq) {
+			const char *k = line, *ke = eq;
+			while (ke > k && (ke[-1] == ' ' || ke[-1] == '\t'))
+				ke--;
+			if (ke - k == name_len && !strncasecmp(k, name, name_len)) {
+				const char *v = eq + 1, *ve = end;
+				while (v < ve && (*v == ' ' || *v == '\t'))
+					v++;
+				while (ve > v && (ve[-1] == '\r' || ve[-1] == ' '))
+					ve--;
+				u8 buf[96];
+				int n = ve - v < (int)sizeof(buf) - 1 ? ve - v : (int)sizeof(buf) - 1;
+				buf[0] = 3; // UTF-8
+				memcpy(buf + 1, v, n);
+				decode_text(buf, n + 1, t->title, sizeof(t->title));
+				return;
+			}
+		}
+		line = *end ? end + 1 : end;
+	}
+}
+
 static void parse_track(Track *t)
 {
 	t->parsed = true;
@@ -277,6 +337,7 @@ static void parse_track(Track *t)
 	}
 	read_length(t, &s);
 	src_close(&s);
+	title_from_list(t);
 	title_from_name(t);
 }
 
