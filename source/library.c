@@ -640,8 +640,13 @@ static const char *const demo_media[] = {
 	"sd:/music/Chinito Sushi - Main Theme.mp3",
 	"sd:/music/MuiThai3D - Fight Night.mp3",
 	"sd:/music/PicoLoader - Boot Jingle.mp3",
-	"sd:/videos/FML Launcher Tour.mpg",
-	"sd:/videos/Holiday 2004.mp4",
+	"sd:/videos/Movies/FML Launcher Tour.mpg",
+	"sd:/videos/Movies/Holiday 2004.mp4",
+	"sd:/videos/TV Shows/Pico Quest/Season 1/Pico Quest S01E01 - Pilot.mpg",
+	"sd:/videos/TV Shows/Pico Quest/Season 1/Pico Quest S01E02 - The Chip.mpg",
+	"sd:/videos/TV Shows/Pico Quest/Season 1/Pico Quest S01E10 - Finale.mpg",
+	"sd:/videos/TV Shows/Pico Quest/Season 2/Pico Quest S02E01 - Return.mpg",
+	"sd:/videos/TV Shows/Cube Kitchen/Cube Kitchen - Episode 1.mpg",
 };
 
 bool library_demo_file(const char *path, const u8 **data, u32 *size)

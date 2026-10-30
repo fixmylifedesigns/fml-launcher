@@ -34,6 +34,8 @@ from Settings (Y).
   volume. Music keeps playing on the shelf after you close it.
 - Movie Player app: plays MPEG-1 `.mpg` videos with sound. Other formats are listed as
   "needs converting": run `python tools/make_movie.py video.mp4` (needs ffmpeg) to make one.
+  Videos are shown by folder, so TV shows can go in
+  `videos/TV Shows/<Show>/Season 1/<Show> S01E01 - Title.mpg`; episodes sort by number.
 
 ## Controls
 | Button | Action |

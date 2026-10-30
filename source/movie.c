@@ -1,5 +1,6 @@
 #include <gccore.h>
 #include <asndlib.h>
+#include <ctype.h>
 #include <malloc.h>
 #include <math.h>
 #include <stdio.h>
@@ -22,6 +23,20 @@
 
 static const MediaFile *files;
 static int file_count, sel, scroll;
+
+// The list shows one folder at a time: its subfolders, then its videos.
+// `base` is the deepest folder holding every video, so a card with
+// everything in sd:/videos/ opens straight onto Movies and TV Shows.
+typedef struct {
+	const char *name; // points into a file's path
+	int name_len;
+	bool folder;
+	int file;  // index in files (videos)
+	int count; // videos inside (folders)
+} Entry;
+static Entry view[1024];
+static int view_count;
+static char base[256], cur[256];
 static char message[120];
 static int message_frames;
 
@@ -287,12 +302,125 @@ static void set_paused(bool p)
 	controls_frames = p ? 1 << 30 : 180;
 }
 
+// ---------------------------------------------------------------- folders
+
+// Compares names with numbers by value, so Episode 2 comes before Episode 10
+static int natural_cmp(const char *a, int na, const char *b, int nb)
+{
+	int i = 0, j = 0;
+	while (i < na && j < nb) {
+		if (isdigit((u8)a[i]) && isdigit((u8)b[j])) {
+			while (i < na && a[i] == '0') i++;
+			while (j < nb && b[j] == '0') j++;
+			int si = i, sj = j;
+			while (i < na && isdigit((u8)a[i])) i++;
+			while (j < nb && isdigit((u8)b[j])) j++;
+			if (i - si != j - sj)
+				return (i - si) - (j - sj);
+			int c = strncmp(a + si, b + sj, i - si);
+			if (c)
+				return c;
+		} else {
+			int ca = tolower((u8)a[i]), cb = tolower((u8)b[j]);
+			if (ca != cb)
+				return ca - cb;
+			i++;
+			j++;
+		}
+	}
+	return (na - i) - (nb - j);
+}
+
+static int compare_entries(const void *pa, const void *pb)
+{
+	const Entry *a = pa, *b = pb;
+	if (a->folder != b->folder)
+		return a->folder ? -1 : 1;
+	return natural_cmp(a->name, a->name_len, b->name, b->name_len);
+}
+
+static void find_base(void)
+{
+	snprintf(base, sizeof(base), "sd:/");
+	if (!file_count)
+		return;
+	const char *first = files[0].path;
+	int len = strrchr(first, '/') - first + 1;
+	for (int i = 1; i < file_count; i++)
+		while (len > 4 && strncmp(files[i].path, first, len) != 0) {
+			len--;
+			while (len > 4 && first[len - 1] != '/')
+				len--;
+		}
+	snprintf(base, sizeof(base), "%.*s", len, first);
+}
+
+static void build_view(void)
+{
+	view_count = 0;
+	int cl = strlen(cur);
+	for (int i = 0; i < file_count && view_count < (int)(sizeof(view) / sizeof(view[0])); i++) {
+		const char *p = files[i].path;
+		if (strncmp(p, cur, cl) != 0)
+			continue;
+		const char *rest = p + cl, *slash = strchr(rest, '/');
+		if (!slash) {
+			view[view_count++] = (Entry){ rest, strlen(rest), false, i, 0 };
+			continue;
+		}
+		int n = slash - rest, k;
+		for (k = 0; k < view_count; k++)
+			if (view[k].folder && view[k].name_len == n && !strncmp(view[k].name, rest, n))
+				break;
+		if (k < view_count)
+			view[k].count++;
+		else
+			view[view_count++] = (Entry){ rest, n, true, -1, 1 };
+	}
+	qsort(view, view_count, sizeof(Entry), compare_entries);
+}
+
+static void enter_folder(const Entry *e)
+{
+	int cl = strlen(cur);
+	if (cl + e->name_len + 2 > (int)sizeof(cur))
+		return;
+	snprintf(cur + cl, sizeof(cur) - cl, "%.*s/", e->name_len, e->name);
+	build_view();
+	sel = scroll = 0;
+}
+
+// Up one folder, with the folder we left selected
+static void leave_folder(void)
+{
+	int cl = strlen(cur) - 1;
+	while (cl > 0 && cur[cl - 1] != '/')
+		cl--;
+	char left[128];
+	snprintf(left, sizeof(left), "%.*s", (int)(strlen(cur) - 1 - cl), cur + cl);
+	cur[cl] = 0;
+	build_view();
+	sel = 0;
+	for (int i = 0; i < view_count; i++)
+		if (view[i].folder && view[i].name_len == (int)strlen(left) && !strncmp(view[i].name, left, view[i].name_len))
+			sel = i;
+}
+
 // ---------------------------------------------------------------- the app
 
 void movie_open(void)
 {
 	file_count = library_media(MEDIA_VIDEO, &files);
-	if (sel >= file_count)
+	find_base();
+	// Stay in the last folder if it still has videos
+	if (strncmp(cur, base, strlen(base)) != 0)
+		snprintf(cur, sizeof(cur), "%s", base);
+	build_view();
+	if (!view_count) {
+		snprintf(cur, sizeof(cur), "%s", base);
+		build_view();
+	}
+	if (sel >= view_count)
 		sel = 0;
 	message_frames = 0;
 }
@@ -348,8 +476,12 @@ bool movie_input(u32 down, u32 held)
 		return true;
 	}
 
-	if (down & PAD_BUTTON_B)
-		return false;
+	if (down & PAD_BUTTON_B) {
+		if (!strcmp(cur, base))
+			return false;
+		leave_folder();
+		return true;
+	}
 	static int hold;
 	s8 sy = PAD_StickY(0);
 	int dir = (held & PAD_BUTTON_UP) || sy > 60 ? -1 : (held & PAD_BUTTON_DOWN) || sy < -60 ? 1 : 0;
@@ -361,9 +493,14 @@ bool movie_input(u32 down, u32 held)
 		hold = 0;
 	}
 	if (sel < 0) sel = 0;
-	if (sel >= file_count) sel = file_count - 1;
-	if ((down & (PAD_BUTTON_A | PAD_BUTTON_START)) && file_count > 0)
-		open_video(&files[sel]);
+	if (sel >= view_count) sel = view_count - 1;
+	if (sel < 0) sel = 0;
+	if ((down & (PAD_BUTTON_A | PAD_BUTTON_START)) && view_count > 0) {
+		if (view[sel].folder)
+			enter_folder(&view[sel]);
+		else
+			open_video(&files[view[sel].file]);
+	}
 	return true;
 }
 
@@ -442,6 +579,16 @@ static void draw_playing(void)
 	}
 }
 
+// A yellow XP-style folder
+static void draw_folder(float x, float y, float w, float h)
+{
+	float tab = h * 0.22f;
+	gx_round_rect(x, y, w * 0.45f, tab * 2, tab * 0.6f, rgba(0xD9A520, 255));
+	gx_round_rect(x, y + tab, w, h - tab, h * 0.12f, rgba(0xF2C94C, 255));
+	gx_texture(NULL);
+	gx_quad(x + 2, y + tab + 2, w - 4, 2, rgba(0xFFE89A, 255));
+}
+
 static void draw_list(void)
 {
 	int hx, hcy, hend;
@@ -458,9 +605,34 @@ static void draw_list(void)
 	gx_round_rect(tx + 8, ty + 5, 116, 24, 12, rgba(0x3C8DFF, 150));
 	xp_glyph(XG_FILM, tx + 24, ty + 17, 16, rgba(WHITE, 255));
 	gx_text(FONT_13S, tx + 36, gfx_center_baseline(FONT_13S, ty + 17), "Video Library", rgba(WHITE, 255));
-	char count[32];
-	snprintf(count, sizeof(count), "%d video%s", file_count, file_count == 1 ? "" : "s");
-	gx_text(FONT_12, tx + win.cw - 12 - gfx_text_width(FONT_12, count), gfx_center_baseline(FONT_12, ty + 17), count, rgba(C_DIM, 255));
+	int folders = 0, videos = 0;
+	for (int i = 0; i < view_count; i++) {
+		if (view[i].folder)
+			folders++;
+		videos += view[i].folder ? view[i].count : 1;
+	}
+	char count[48];
+	if (folders)
+		snprintf(count, sizeof(count), "%d folder%s \x03 %d video%s", folders, folders == 1 ? "" : "s", videos, videos == 1 ? "" : "s");
+	else
+		snprintf(count, sizeof(count), "%d video%s", videos, videos == 1 ? "" : "s");
+	int count_w = gfx_text_width(FONT_12, count);
+	gx_text(FONT_12, tx + win.cw - 12 - count_w, gfx_center_baseline(FONT_12, ty + 17), count, rgba(C_DIM, 255));
+	// Where we are, e.g. "TV Shows > Show > Season 1"
+	if (strcmp(cur, base)) {
+		char where[256];
+		int w = 0;
+		for (const char *p = cur + strlen(base); *p && w < (int)sizeof(where) - 4; p++) {
+			if (*p == '/') {
+				if (p[1])
+					w += snprintf(where + w, sizeof(where) - w, " > ");
+			} else {
+				where[w++] = *p;
+			}
+		}
+		where[w] = 0;
+		gx_text_fit(FONT_13S, tx + 136, gfx_center_baseline(FONT_13S, ty + 17), where, rgba(WHITE, 255), win.cw - 136 - count_w - 24);
+	}
 
 	float top = ty + 42, bottom = win.cy + win.ch - 10;
 	float info_w = gx_wide ? 300 : 220;
@@ -476,12 +648,21 @@ static void draw_list(void)
 	if (sel < scroll) scroll = sel;
 	if (sel >= scroll + rows) scroll = sel - rows + 1;
 	if (scroll < 0) scroll = 0;
-	for (int r = 0; r < rows && scroll + r < file_count; r++) {
+	for (int r = 0; r < rows && scroll + r < view_count; r++) {
 		int i = scroll + r;
-		const MediaFile *m = &files[i];
 		float ry = top + 4 + r * row_h;
 		if (i == sel)
 			gx_round_rect(lx + 4, ry, list_w - 8, row_h - 3, 5, rgba(0x2F62B8, 255));
+		if (view[i].folder) {
+			draw_folder(lx + 10, ry + 4, 34, 24);
+			char name[128], sub[32];
+			snprintf(name, sizeof(name), "%.*s", view[i].name_len, view[i].name);
+			snprintf(sub, sizeof(sub), "%d video%s", view[i].count, view[i].count == 1 ? "" : "s");
+			gx_text_fit(FONT_13S, lx + 54, ry + 15, name, rgba(WHITE, 255), list_w - 70);
+			gx_text_fit(FONT_12, lx + 54, ry + 29, sub, rgba(C_DIM, 255), list_w - 70);
+			continue;
+		}
+		const MediaFile *m = &files[view[i].file];
 		gx_round_rect(lx + 10, ry + 4, 34, 24, 4, rgba(m->playable ? 0x3C8DFF : 0x56627A, 255));
 		xp_glyph(XG_FILM, lx + 27, ry + 16, 22, rgba(WHITE, 255));
 		const char *name = strrchr(m->path, '/') + 1;
@@ -500,8 +681,20 @@ static void draw_list(void)
 	// Details of the selected video
 	float ix = lx + list_w + 8;
 	xp_panel(ix, top, info_w, bottom - top);
-	if (file_count) {
-		const MediaFile *m = &files[sel];
+	if (view_count && view[sel].folder) {
+		const Entry *e = &view[sel];
+		float pw = info_w - 32, ph = pw * 9 / 16;
+		gx_round_rect(ix + 16, top + 16, pw, ph, 6, rgba(0x1C4FA8, 255));
+		draw_folder(ix + info_w / 2 - 40, top + 16 + ph / 2 - 28, 80, 56);
+		float y = top + 30 + ph;
+		char name[128], sub[32];
+		snprintf(name, sizeof(name), "%.*s", e->name_len, e->name);
+		snprintf(sub, sizeof(sub), "%d video%s", e->count, e->count == 1 ? "" : "s");
+		gx_text_fit(FONT_15S, ix + 16, y + 6, name, rgba(WHITE, 255), info_w - 32);
+		gx_text(FONT_12, ix + 16, y + 26, sub, rgba(C_DIM, 255));
+		gx_text(FONT_12, ix + 16, y + 48, "Press A to open", rgba(C_ACCENT, 255));
+	} else if (view_count) {
+		const MediaFile *m = &files[view[sel].file];
 		gx_round_rect(ix + 16, top + 16, info_w - 32, (info_w - 32) * 9 / 16, 6, rgba(m->playable ? 0x1C4FA8 : 0x3A4458, 255));
 		xp_glyph(XG_FILM, ix + info_w / 2, top + 16 + (info_w - 32) * 9 / 32, 54, rgba(WHITE, 220));
 		float y = top + 30 + (info_w - 32) * 9 / 16;
@@ -526,8 +719,11 @@ static void draw_list(void)
 		gx_text_fit(FONT_12, lx + 16, bottom - 17, message, rgba(0xFFC2B0, 255), list_w - 32);
 	}
 
-	if (file_count && hx + xp_hint_width("A", "Play") <= hend)
-		xp_hint(hx, hcy, "A", "Play");
+	const char *a = !view_count ? NULL : view[sel].folder ? "Open" : "Play";
+	if (a && hx + xp_hint_width("A", a) <= hend)
+		hx = xp_hint(hx, hcy, "A", a);
+	if (strcmp(cur, base) && hx + xp_hint_width("B", "Up") <= hend)
+		xp_hint(hx, hcy, "B", "Up");
 }
 
 void movie_draw(void)
