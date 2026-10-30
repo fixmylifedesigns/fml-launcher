@@ -32,6 +32,7 @@ from Settings (Y).
 - Music Player app (Apps tab): plays `.mp3` files from anywhere on the card in a Windows XP
   media player style window: playlist, ID3 tags, frequency bars, shuffle, repeat, seek and
   volume. Music keeps playing on the shelf after you close it.
+  Album covers come from the picture in the MP3, or a `Folder.jpg` / `cover.jpg` next to it.
 - Movie Player app: plays MPEG-1 `.mpg` videos with sound. Other formats are listed as
   "needs converting": run `python tools/make_movie.py video.mp4` (needs ffmpeg) to make one.
   Videos are shown by folder, so TV shows can go in
@@ -113,7 +114,7 @@ Ready-made builds are on the [releases page](https://github.com/fixmylifedesigns
 - `source/library.c`: SD scanning (games, music and videos) and the demo card.
 - `source/disc.c`: disc drive thread: detects discs and copies them to the card.
 - `source/music.c`, `source/movie.c`, `source/xpui.c`: the music and movie players and their
-  XP-style look. `source/plm.c` builds `pl_mpeg.h` (MIT, phoboslab) for MPEG-1 decoding.
+  XP-style look. `source/plm.c` builds `pl_mpeg.h` (MIT, phoboslab) for MPEG-1 decoding. `source/stbi.c` builds `stb_image.h` (public domain) for album covers.
 - `tools/make_movie.py` converts any video to the `.mpg` the movie player plays.
 - `source/boot.c` + `stub.S`: loads a DOL, passes argv (for Swiss autoload) and jumps to it.
 - `source/gx.c`: GPU setup, textures, GPU text (font atlas) and rounded shapes.

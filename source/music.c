@@ -12,6 +12,8 @@
 #include "music.h"
 #include "sound.h"
 #include "xpui.h"
+#define STBI_NO_STDIO
+#include "stb_image.h"
 
 #define WHITE 0xFFFFFF
 #define C_TEXT 0xDDE8FF
@@ -276,6 +278,162 @@ static void parse_track(Track *t)
 	read_length(t, &s);
 	src_close(&s);
 	title_from_name(t);
+}
+
+// ---------------------------------------------------------------- album art
+
+// The picture built into the song (ID3v2 APIC), else a Folder.jpg or
+// cover.jpg next to it. Shrunk to a small texture once per album.
+#define ART 128
+static Tex art_tex;
+static char art_key[300];
+static bool art_ok;
+
+// The first picture in the song's ID3v2 tag, in a malloc'd buffer
+static u8 *read_apic(const Track *t, u32 *len)
+{
+	Src s;
+	if (!src_open(&s, t->file))
+		return NULL;
+	u8 h[10], *tag = NULL, *pic = NULL;
+	if (src_read(&s, h, 10) != 10 || memcmp(h, "ID3", 3) || h[3] < 2 || h[3] > 4 || (h[5] & 0x80))
+		goto done; // no tag, or one with unsynchronisation (rare)
+	u32 n = syncsafe(h + 6);
+	if (n > 8 * 1024 * 1024 || !(tag = malloc(n)) || (u32)src_read(&s, tag, n) != n)
+		goto done;
+	int ver = h[3], hdr = ver == 2 ? 6 : 10;
+	for (u32 pos = 0; pos + hdr <= n && tag[pos];) {
+		const u8 *f = tag + pos;
+		u32 size = ver == 2 ? (f[3] << 16) | (f[4] << 8) | f[5] : ver == 4 ? syncsafe(f + 4) : (f[4] << 24) | (f[5] << 16) | (f[6] << 8) | f[7];
+		if (size > n - pos - hdr)
+			break;
+		if (!memcmp(f, ver == 2 ? "PIC" : "APIC", ver == 2 ? 3 : 4) && size > 4) {
+			const u8 *p = f + hdr, *end = p + size;
+			int enc = *p++;
+			if (ver == 2)
+				p += 3; // image format, e.g. "JPG"
+			else
+				while (p < end && *p++) // MIME type
+					;
+			p++; // picture type
+			if (enc == 1 || enc == 2) { // UTF-16 description ends with two zero bytes
+				while (p + 1 < end && (p[0] || p[1]))
+					p += 2;
+				p += 2;
+			} else {
+				while (p < end && *p++)
+					;
+			}
+			if (p < end && (pic = malloc(end - p))) {
+				*len = end - p;
+				memcpy(pic, p, *len);
+			}
+			break;
+		}
+		pos += hdr + size;
+	}
+done:
+	free(tag);
+	src_close(&s);
+	return pic;
+}
+
+static u8 *read_file(const char *path, u32 *len)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return NULL;
+	fseek(f, 0, SEEK_END);
+	long size = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	u8 *data = size > 0 && size < 8 * 1024 * 1024 ? malloc(size) : NULL;
+	if (data && fread(data, 1, size, f) != (size_t)size) {
+		free(data);
+		data = NULL;
+	}
+	fclose(f);
+	*len = size;
+	return data;
+}
+
+// Decodes a JPEG or PNG, crops it square and shrinks it into the art texture
+static bool make_art(const u8 *data, u32 len)
+{
+	int w, h, comp;
+	if (!stbi_info_from_memory(data, len, &w, &h, &comp) || w < 16 || h < 16 || (u64)w * h > 3000 * 3000)
+		return false;
+	// Only decode if there's clearly room (the picture plus the decoder's own buffers)
+	void *room = malloc((size_t)w * h * 6 + 512 * 1024);
+	if (!room)
+		return false;
+	free(room);
+	u8 *px = stbi_load_from_memory(data, len, &w, &h, &comp, 3);
+	if (!px)
+		return false;
+	static u16 tiles[ART * ART] __attribute__((aligned(32)));
+	int side = w < h ? w : h, ox = (w - side) / 2, oy = (h - side) / 2;
+	for (int y = 0; y < ART; y++) {
+		int y0 = oy + y * side / ART, y1 = oy + (y + 1) * side / ART;
+		if (y1 <= y0)
+			y1 = y0 + 1;
+		for (int x = 0; x < ART; x++) {
+			int x0 = ox + x * side / ART, x1 = ox + (x + 1) * side / ART;
+			if (x1 <= x0)
+				x1 = x0 + 1;
+			u32 r = 0, g = 0, b = 0, count = 0;
+			for (int sy = y0; sy < y1; sy++) {
+				const u8 *p = px + ((size_t)sy * w + x0) * 3;
+				for (int sx = x0; sx < x1; sx++, p += 3) {
+					r += p[0];
+					g += p[1];
+					b += p[2];
+					count++;
+				}
+			}
+			r /= count;
+			g /= count;
+			b /= count;
+			// RGB565 in 4x4 tiles
+			int i = ((y / 4) * (ART / 4) + x / 4) * 16 + (y % 4) * 4 + x % 4;
+			tiles[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+		}
+	}
+	stbi_image_free(px);
+	tex_free(&art_tex);
+	tex_from_tiles(&art_tex, tiles, ART, ART, GX_TF_RGB565);
+	return art_tex.ready;
+}
+
+// Loads the art for this song's album, unless it's already showing
+static void load_art(const Track *t)
+{
+	const char *path = t->file->path, *slash = strrchr(path, '/');
+	int dir_len = slash - path + 1;
+	char key[sizeof(art_key)];
+	// Songs from the same album in the same folder share one picture
+	if (t->album[0])
+		snprintf(key, sizeof(key), "%.*s|%s", dir_len, path, t->album);
+	else
+		snprintf(key, sizeof(key), "%s", path);
+	if (!strcmp(key, art_key))
+		return;
+	snprintf(art_key, sizeof(art_key), "%s", key);
+	art_ok = false;
+	u32 len = 0;
+	u8 *data = read_apic(t, &len);
+	if (data) {
+		art_ok = make_art(data, len);
+		free(data);
+	}
+	static const char *const names[] = { "folder.jpg", "cover.jpg", "front.jpg", "albumart.jpg", "folder.png", "cover.png" };
+	for (size_t i = 0; !art_ok && i < sizeof(names) / sizeof(names[0]); i++) {
+		char p[300];
+		snprintf(p, sizeof(p), "%.*s%s", dir_len, path, names[i]);
+		if ((data = read_file(p, &len))) {
+			art_ok = make_art(data, len);
+			free(data);
+		}
+	}
 }
 
 // ---------------------------------------------------------------- playing
@@ -604,21 +762,37 @@ static void draw_bars(float x, float y, float w, float h)
 static void draw_now_playing(float x, float y, float w, float h)
 {
 	xp_panel(x, y, w, h);
-	const Track *t = cur >= 0 ? &tracks[cur] : track_count && sel < track_count ? &tracks[sel] : NULL;
+	Track *t = cur >= 0 ? &tracks[cur] : track_count && sel < track_count ? &tracks[sel] : NULL;
+	float bars_y = y + 92;
 	if (!track_count) {
 		gx_text_centered(FONT_19B, x + w / 2, y + h / 2 - 8, "No music found", rgba(C_TEXT, 255));
 		gx_text_centered(FONT_12, x + w / 2, y + h / 2 + 16, "Copy .mp3 files anywhere on the SD card.", rgba(C_DIM, 255));
 		return;
 	}
-	// Album tile in a colour from the album (or title), with a note on it
+	// The album cover, or a tile in a colour from the album (or title) with a note on it
 	if (t) {
-		u32 hue = hash(t->album[0] ? t->album : t->title) % 360;
-		gx_round_rect(x + 12, y + 12, 64, 64, 6, rgba(gfx_hsl(hue, 0.6f, 0.45f), 255));
-		gx_round_rect(x + 12, y + 44, 64, 32, 6, rgba(gfx_hsl(hue + 40, 0.65f, 0.28f), 200));
-		gx_round_rect(x + 14, y + 14, 60, 24, 5, rgba(WHITE, 40));
-		xp_glyph(XG_NOTE, x + 44, y + 44, 40, rgba(WHITE, 230));
+		if (!t->parsed)
+			parse_track(t);
+		load_art(t);
 		float tx = x + 90;
-		int tw = w - 104;
+		if (art_ok) {
+			// The album cover, with a thin frame and a soft shadow
+			const float a = 104;
+			gx_round_rect(x + 13, y + 15, a, a, 3, rgba(0x000000, 90));
+			gx_round_rect(x + 11, y + 11, a + 2, a + 2, 3, rgba(0x9DB8E8, 200));
+			gx_texture(&art_tex);
+			gx_quad(x + 12, y + 12, a, a, rgba(WHITE, 255));
+			gx_texture(NULL);
+			tx = x + 12 + a + 14;
+			bars_y = y + 12 + a + 14;
+		} else {
+			u32 hue = hash(t->album[0] ? t->album : t->title) % 360;
+			gx_round_rect(x + 12, y + 12, 64, 64, 6, rgba(gfx_hsl(hue, 0.6f, 0.45f), 255));
+			gx_round_rect(x + 12, y + 44, 64, 32, 6, rgba(gfx_hsl(hue + 40, 0.65f, 0.28f), 200));
+			gx_round_rect(x + 14, y + 14, 60, 24, 5, rgba(WHITE, 40));
+			xp_glyph(XG_NOTE, x + 44, y + 44, 40, rgba(WHITE, 230));
+		}
+		int tw = x + w - 14 - tx;
 		gx_text_fit(FONT_19B, tx, y + 34, t->title, rgba(WHITE, 255), tw);
 		gx_text_fit(FONT_13M, tx, y + 55, t->artist[0] ? t->artist : "Unknown artist", rgba(C_TEXT, 255), tw);
 		gx_text_fit(FONT_12, tx, y + 73, t->album[0] ? t->album : "", rgba(C_DIM, 255), tw);
@@ -627,7 +801,7 @@ static void draw_now_playing(float x, float y, float w, float h)
 		else if (paused)
 			gx_text(FONT_11B, x + w - 64, y + 22, "PAUSED", rgba(0xFFD54A, 255));
 	}
-	draw_bars(x + 14, y + 92, w - 28, h - 92 - 34);
+	draw_bars(x + 14, bars_y, w - 28, y + h - 34 - bars_y);
 	if (message_frames > 0) {
 		message_frames--;
 		gx_text_centered(FONT_12, x + w / 2, y + h - 10, message, rgba(0xFF8F7A, 255));
