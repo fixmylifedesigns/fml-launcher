@@ -14,7 +14,8 @@ typedef struct {
 } Cover;
 
 void covers_reset(bool demo); // forget everything (new card or demo)
-void covers_update(int selected); // load at most one cover per call; frees far ones
+void covers_update(int selected); // start loading the next cover (in the background); frees far ones
+void covers_wait(void);           // wait for a cover being loaded (before unmounting the card)
 Cover *covers_get(int index);
 
 #endif

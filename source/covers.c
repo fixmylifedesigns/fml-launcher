@@ -1,5 +1,8 @@
 #include <ctype.h>
+#include <ogc/lwp.h>
+#include <ogc/semaphore.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -30,8 +33,54 @@ static u32 hash(const char *s)
 	return h;
 }
 
+// Covers load on a background thread, so reading the SD card (about 0.1 s
+// per cover) never holds up the menu. One cover at a time: the main loop
+// hands over a game, and marks the cover loaded once the thread is done.
+static lwp_t loader_thread = LWP_THREAD_NULL;
+static sem_t job_sem;
+static volatile int job = -1; // index being loaded, or -1
+static volatile bool job_done;
+static Game job_game;         // a copy, in case the list changes meanwhile
+static u8 loader_stack[64 * 1024] __attribute__((aligned(32)));
+
+static void load_cover(Cover *c, const Game *g);
+
+static void *loader(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		LWP_SemWait(job_sem);
+		load_cover(&cache[job], &job_game);
+		job_done = true;
+	}
+	return NULL;
+}
+
+// Marks the finished cover as ready to draw
+static void finish_job(void)
+{
+	if (job >= 0 && job_done) {
+		cache[job].loaded = true;
+		job = -1;
+		job_done = false;
+	}
+}
+
+static void wait_for_loader(void)
+{
+	while (job >= 0 && !job_done)
+		usleep(1000);
+	finish_job();
+}
+
+void covers_wait(void)
+{
+	wait_for_loader();
+}
+
 void covers_reset(bool demo)
 {
+	wait_for_loader();
 	for (int i = 0; i < MAX_GAMES; i++) {
 		if (cache[i].loaded) {
 			tex_free(&cache[i].front);
@@ -355,10 +404,8 @@ static void generate_spine(Cover *c, const Game *g)
 	tex_from_surface(&c->spine, &s, GX_TF_RGB565);
 }
 
-static void load_cover(int index)
+static void load_cover(Cover *c, const Game *g)
 {
-	Cover *c = &cache[index];
-	const Game *g = &games[index];
 	u32 hue = hash(g->title) % 360;
 	if (g->kind == KIND_APP)
 		hue = !strcmp(g->key, "fml-music") ? 214 : 24;
@@ -370,11 +417,15 @@ static void load_cover(int index)
 		generate_front(c, g, hue);
 	if (!c->spine.ready)
 		generate_spine(c, g);
-	c->loaded = true;
 }
 
 void covers_update(int selected)
 {
+	if (loader_thread == LWP_THREAD_NULL) {
+		LWP_SemInit(&job_sem, 0, 1);
+		LWP_CreateThread(&loader_thread, loader, NULL, loader_stack, sizeof(loader_stack), 30);
+	}
+	finish_job();
 	for (int i = 0; i < game_count; i++) {
 		int d = i > selected ? i - selected : selected - i;
 		if (cache[i].loaded && d > KEEP_RANGE) {
@@ -384,11 +435,16 @@ void covers_update(int selected)
 			cache[i].loaded = false;
 		}
 	}
+	if (job >= 0)
+		return; // still loading the last one
 	for (int d = 0; d <= LOAD_RANGE; d++) {
 		for (int sign = 1; sign >= -1; sign -= 2) {
 			int i = selected + d * sign;
 			if (i >= 0 && i < game_count && !cache[i].loaded) {
-				load_cover(i);
+				job_game = games[i];
+				job_done = false;
+				job = i;
+				LWP_SemPost(job_sem);
 				return;
 			}
 			if (d == 0)

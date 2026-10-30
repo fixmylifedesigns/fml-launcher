@@ -44,11 +44,18 @@
 #define SR ((int)gx_right)
 #define LOGO_SIZE 40
 
+// libogc2's SD interfaces keep state, so they aren't const there
+#ifdef LIBOGC2
+typedef DISC_INTERFACE Iface;
+#else
+typedef const DISC_INTERFACE Iface;
+#endif
+
 typedef struct {
 	const char *name;
 	const char *swiss_prefix; // how Swiss names this device
 	const char *vba_prefix;   // how Visual Boy Advance GX names it
-	const DISC_INTERFACE *iface;
+	Iface *iface;
 } Device;
 
 static const Device devices[] = {
@@ -121,11 +128,19 @@ static const char build_id[] = "FMLBUILD:" __DATE__ " " __TIME__;
 
 // ---------------------------------------------------------------- storage
 
+// libogc2's disc interface functions take the interface itself
+#ifdef LIBOGC2
+#define IFACE_CALL(iface, fn) (iface)->fn(iface)
+#else
+#define IFACE_CALL(iface, fn) (iface)->fn()
+#endif
+
 static void unmount(void)
 {
+	covers_wait(); // a cover may still be loading from the card
 	if (device >= 0) {
 		fatUnmount("sd:/");
-		devices[device].iface->shutdown();
+		IFACE_CALL(devices[device].iface, shutdown);
 		device = -1;
 	}
 }
@@ -136,12 +151,12 @@ static bool mount_from(int start)
 	unmount();
 	for (int i = 0; i < DEVICE_COUNT; i++) {
 		int d = (start + i) % DEVICE_COUNT;
-		const DISC_INTERFACE *iface = devices[d].iface;
-		if (iface->startup() && iface->isInserted() && fatMountSimple("sd", iface)) {
+		Iface *iface = devices[d].iface;
+		if (IFACE_CALL(iface, startup) && IFACE_CALL(iface, isInserted) && fatMountSimple("sd", iface)) {
 			device = d;
 			return true;
 		}
-		iface->shutdown();
+		IFACE_CALL(iface, shutdown);
 	}
 	return false;
 }

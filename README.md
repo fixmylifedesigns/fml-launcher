@@ -85,6 +85,15 @@ make
 
 This gives you `cubelaunch.dol`.
 
+Release builds use libogc2, the libogc fork Swiss uses, for its newer SD card drivers
+(GC2SD and other memory card slot adapters, and SD2SP2 after another program has used it).
+Add its package repository (see https://github.com/extremscorner/libogc2), install `libogc2`,
+`libogc2-libdvm` and `ppc-libmad`, then build with:
+
+```
+make LIBOGC2=1
+```
+
 ## Testing in Dolphin
 Dolphin can't emulate GameCube SD adapters, so use demo mode: press **Y** on the "No SD card"
 screen, or build with `make DEMO=1` to go straight in. Demo mode shows a fake card. Covers baked

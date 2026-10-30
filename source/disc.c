@@ -7,6 +7,13 @@
 #include <ogc/lwp_watchdog.h>
 
 #include "disc.h"
+
+// libogc2 renamed DVD_ReadPrio
+#ifdef LIBOGC2
+#define DVD_READ_PRIO DVD_ReadAbsPrio
+#else
+#define DVD_READ_PRIO DVD_ReadPrio
+#endif
 #include "library.h"
 
 #define CHUNK (512 * 1024)
@@ -54,7 +61,7 @@ static void read_header(void)
 	DiscInfo d = { .state = DISC_NONE };
 	DVD_Mount();
 	dvdcmdblk blk;
-	if (DVD_ReadPrio(&blk, head, sizeof(head), 0, 2) < 0) {
+	if (DVD_READ_PRIO(&blk, head, sizeof(head), 0, 2) < 0) {
 		set_info(&d); // no disc (or nothing the drive can read)
 		return;
 	}
@@ -154,7 +161,7 @@ static void do_rip(void)
 		pending = false;
 		for (int retry = 0; r < 0 && retry < 3 && !rip_cancel; retry++) {
 			dvdcmdblk blk;
-			r = DVD_ReadPrio(&blk, bufs[cur], len, off, 2);
+			r = DVD_READ_PRIO(&blk, bufs[cur], len, off, 2);
 		}
 		if (r < 0) {
 			rip_fail("The disc couldn't be read at %lu MB. Clean it and try again.", off);

@@ -7,7 +7,13 @@ ifeq ($(strip $(DEVKITPPC)),)
 $(error "Please set DEVKITPPC in your environment. export DEVKITPPC=<path to>devkitPPC")
 endif
 
+# `make LIBOGC2=1` builds with libogc2 (Extrems' fork used by Swiss: newer SD
+# card drivers, including GC2SD in the memory card slots)
+ifneq ($(LIBOGC2),)
+include $(DEVKITPRO)/libogc2/gamecube_rules
+else
 include $(DEVKITPPC)/gamecube_rules
+endif
 
 TARGET		:=	cubelaunch
 BUILD		:=	build
@@ -27,6 +33,12 @@ LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
 
 LIBS		:=	-lfat -lmad -lasnd -logc -lm
 LIBDIRS		:=
+ifneq ($(LIBOGC2),)
+# libogc2 has the MP3 player in libasnd, with libmad from the ppc portlibs
+LIBS		:=	-lfat -lasnd -lmad -logc -lm
+LIBDIRS		:=	$(PORTLIBS_PATH)/ppc
+CFLAGS		+=	-DLIBOGC2
+endif
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 
