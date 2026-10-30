@@ -304,6 +304,61 @@ void gx_quad(float x, float y, float w, float h, u32 c)
 	GX_End();
 }
 
+void gx_quad_grad(float x, float y, float w, float h, u32 top, u32 bottom)
+{
+	GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
+	GX_Position3f32(x, y, 0);
+	GX_Color1u32(top);
+	GX_TexCoord2f32(0, 0);
+	GX_Position3f32(x + w, y, 0);
+	GX_Color1u32(top);
+	GX_TexCoord2f32(1, 0);
+	GX_Position3f32(x + w, y + h, 0);
+	GX_Color1u32(bottom);
+	GX_TexCoord2f32(1, 1);
+	GX_Position3f32(x, y + h, 0);
+	GX_Color1u32(bottom);
+	GX_TexCoord2f32(0, 1);
+	GX_End();
+}
+
+void gx_tri(float x0, float y0, float x1, float y1, float x2, float y2, u32 c)
+{
+	GX_Begin(GX_TRIANGLES, GX_VTXFMT0, 3);
+	GX_Position3f32(x0, y0, 0);
+	GX_Color1u32(c);
+	GX_TexCoord2f32(0, 0);
+	GX_Position3f32(x1, y1, 0);
+	GX_Color1u32(c);
+	GX_TexCoord2f32(0, 0);
+	GX_Position3f32(x2, y2, 0);
+	GX_Color1u32(c);
+	GX_TexCoord2f32(0, 0);
+	GX_End();
+}
+
+void gx_line(float x0, float y0, float x1, float y1, float width, u32 c)
+{
+	float dx = x1 - x0, dy = y1 - y0, len = sqrtf(dx * dx + dy * dy);
+	if (len <= 0)
+		return;
+	float nx = -dy / len * width / 2, ny = dx / len * width / 2;
+	GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
+	GX_Position3f32(x0 + nx, y0 + ny, 0);
+	GX_Color1u32(c);
+	GX_TexCoord2f32(0, 0);
+	GX_Position3f32(x1 + nx, y1 + ny, 0);
+	GX_Color1u32(c);
+	GX_TexCoord2f32(0, 0);
+	GX_Position3f32(x1 - nx, y1 - ny, 0);
+	GX_Color1u32(c);
+	GX_TexCoord2f32(0, 0);
+	GX_Position3f32(x0 - nx, y0 - ny, 0);
+	GX_Color1u32(c);
+	GX_TexCoord2f32(0, 0);
+	GX_End();
+}
+
 void gx_quad_uv(float x, float y, float w, float h, float u0, float v0, float u1, float v1, u32 c)
 {
 	GX_Begin(GX_QUADS, GX_VTXFMT0, 4);

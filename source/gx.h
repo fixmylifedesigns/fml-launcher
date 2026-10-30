@@ -43,6 +43,10 @@ void gx_texture(Tex *t); // NULL = vertex colour only
 
 // Screen-space textured quad (2D mode)
 void gx_quad(float x, float y, float w, float h, u32 rgba);
+// Untextured shapes (2D mode). Call gx_texture(NULL) first.
+void gx_quad_grad(float x, float y, float w, float h, u32 top, u32 bottom); // vertical gradient
+void gx_tri(float x0, float y0, float x1, float y1, float x2, float y2, u32 rgba);
+void gx_line(float x0, float y0, float x1, float y1, float width, u32 rgba);
 
 // Same, with explicit texture coordinates
 void gx_quad_uv(float x, float y, float w, float h, float u0, float v0, float u1, float v1, u32 rgba);

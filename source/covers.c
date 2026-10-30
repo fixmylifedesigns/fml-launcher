@@ -250,8 +250,47 @@ static const char *band_label(const Game *g)
 	case KIND_GBC: return "GAME BOY COLOR";
 	case KIND_GB: return "GAME BOY";
 	case KIND_WEB: return "WEB PAGE";
+	case KIND_APP: return "FML APP";
+	case KIND_DRIVE: return "DISC IN DRIVE";
 	default: return "HOMEBREW";
 	}
+}
+
+// Music player: a note on a glossy round badge. Movie player: a film frame.
+static void draw_app_icon(const Game *g, int w)
+{
+	float cx = w / 2.0f, cy = 96;
+	gfx_circle(cx, cy + 3, 52, RGB(0, 0, 0), 70);
+	gfx_circle(cx, cy, 52, RGB(255, 255, 255), 235);
+	if (!strcmp(g->key, "fml-music")) {
+		gfx_circle(cx, cy, 47, RGB(32, 104, 230), 255);
+		gfx_radial(cx, cy - 22, 40, 20, RGB(255, 255, 255), 0.35f);
+		gfx_rect(cx + 2, cy - 30, 7, 44, RGB(255, 255, 255), 255);
+		for (int i = 0; i < 12; i++)
+			gfx_rect(cx + 2 + i * 2, cy - 30 + i, 3, 10, RGB(255, 255, 255), 255);
+		gfx_circle(cx - 7, cy + 16, 12, RGB(255, 255, 255), 255);
+	} else {
+		gfx_circle(cx, cy, 47, RGB(230, 120, 26), 255);
+		gfx_radial(cx, cy - 22, 40, 20, RGB(255, 255, 255), 0.35f);
+		gfx_round_rect(cx - 30, cy - 21, 60, 42, 5, RGB(255, 255, 255), 255);
+		for (int i = 0; i < 5; i++) {
+			gfx_rect(cx - 26 + i * 12, cy - 18, 6, 5, RGB(150, 70, 10), 255);
+			gfx_rect(cx - 26 + i * 12, cy + 13, 6, 5, RGB(150, 70, 10), 255);
+		}
+		gfx_rect(cx - 24, cy - 9, 48, 18, RGB(150, 70, 10), 200);
+	}
+}
+
+// The disc in the drive: a mini DVD
+static void draw_disc_icon(int w)
+{
+	float cx = w / 2.0f, cy = 98;
+	gfx_circle(cx, cy + 3, 56, RGB(0, 0, 0), 80);
+	gfx_circle(cx, cy, 56, RGB(214, 220, 232), 255);
+	gfx_radial(cx - 18, cy - 20, 50, 30, RGB(255, 255, 255), 0.55f);
+	gfx_radial(cx + 22, cy + 18, 40, 26, RGB(170, 140, 255), 0.35f);
+	gfx_circle(cx, cy, 20, RGB(150, 156, 170), 255);
+	gfx_circle(cx, cy, 8, RGB(40, 40, 52), 255);
 }
 
 static void generate_front(Cover *c, const Game *g, u32 hue)
@@ -265,7 +304,11 @@ static void generate_front(Cover *c, const Game *g, u32 hue)
 	gfx_text(FONT_9K, 9, gfx_center_baseline(FONT_9K, 12), band_label(g), RGB(255, 255, 255), 210);
 
 	static u32 banner[96 * 32];
-	if (g->is_disc && !demo_mode && read_banner(g->path, banner)) {
+	if (g->kind == KIND_APP) {
+		draw_app_icon(g, FRONT_W);
+	} else if (g->kind == KIND_DRIVE) {
+		draw_disc_icon(FRONT_W);
+	} else if (g->is_disc && !demo_mode && read_banner(g->path, banner)) {
 		gfx_round_rect(6, 42, 148, 52, 4, RGB(0, 0, 0), 90);
 		draw_scaled(banner, 96, 32, 8, 44, 144, 48);
 	} else {
@@ -317,6 +360,10 @@ static void load_cover(int index)
 	Cover *c = &cache[index];
 	const Game *g = &games[index];
 	u32 hue = hash(g->title) % 360;
+	if (g->kind == KIND_APP)
+		hue = !strcmp(g->key, "fml-music") ? 214 : 24;
+	else if (g->kind == KIND_DRIVE && !g->id[0])
+		hue = 230;
 	c->base = gfx_hsl(hue + 45, 0.60f, 0.22f);
 	load_cov(c, g->key);
 	if (!c->front.ready)

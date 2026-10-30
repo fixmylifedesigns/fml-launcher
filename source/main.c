@@ -6,10 +6,17 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <time.h>
+#include <ogc/lwp_watchdog.h>
 
 #include "boot.h"
 #include "covers.h"
+#include "disc.h"
+#include "movie.h"
+#include "music.h"
+#include "sound.h"
+#include "xpui.h"
 #include "gfx.h"
 #include "gx.h"
 #include "library.h"
@@ -51,7 +58,8 @@ static const Device devices[] = {
 };
 #define DEVICE_COUNT (int)(sizeof(devices) / sizeof(devices[0]))
 
-enum { SCREEN_HOME, SCREEN_NO_CARD, SCREEN_LAUNCH, SCREEN_ERROR, SCREEN_SEARCHING, SCREEN_SETTINGS, SCREEN_SEARCH, SCREEN_PAGE, SCREEN_VIDEO_CONFIRM };
+enum { SCREEN_HOME, SCREEN_NO_CARD, SCREEN_LAUNCH, SCREEN_ERROR, SCREEN_SEARCHING, SCREEN_SETTINGS, SCREEN_SEARCH, SCREEN_PAGE, SCREEN_VIDEO_CONFIRM,
+       SCREEN_MUSIC, SCREEN_MOVIES, SCREEN_DISC_MENU, SCREEN_RIP };
 
 static int device = -1;
 static bool demo;
@@ -64,6 +72,13 @@ static char error_title[64], error_text[160];
 
 // Web page viewer
 static float page_scroll, page_hint;
+
+// The disc in the drive: its menu, and copying it to the card
+static DiscInfo disc;
+enum { DISC_PLAY, DISC_PLAY_SD, DISC_COPY, DISC_CANCEL };
+static int disc_options[4], disc_option_count, disc_option;
+static char rip_target[300], rip_title[64];
+static int rip_stop_frames; // "Press B again to stop" window
 
 // Tabs and search
 static int tab = TAB_ALL;
@@ -146,6 +161,7 @@ static void search_card(int start)
 
 static void load_library(void)
 {
+	music_stop();
 	if (demo)
 		library_demo();
 	else if (device >= 0)
@@ -416,6 +432,18 @@ static void top_bar(void)
 	gx_blend(BLEND_ALPHA);
 	gx_text(FONT_19B, SL + 82, gfx_center_baseline(FONT_19B, cy), APP_NAME, rgba(C_TEXT, 255));
 
+	// The song playing in the background
+	const char *song = music_now_playing();
+	if (song && screen != SCREEN_SEARCHING) {
+		int x = SL + 82 + gfx_text_width(FONT_19B, APP_NAME) + 16;
+		int w = gfx_text_width(FONT_12, song);
+		if (w > 190)
+			w = 190;
+		gx_round_rect(x, cy - 12, 30 + w + 12, 24, 12, rgba(C_TEXT, 18));
+		xp_glyph(XG_NOTE, x + 15, cy, 14, rgba(C_HL, 255));
+		gx_text_fit(FONT_12, x + 28, gfx_center_baseline(FONT_12, cy), song, rgba(C_DIM, 255), 190);
+	}
+
 	char clock[8];
 	time_t now = time(NULL);
 	struct tm *tm = localtime(&now);
@@ -522,6 +550,107 @@ static void video_confirm_panel(void)
 	hint(hx, y + 112, "B", "Switch back");
 }
 
+// ---------------------------------------------------------------- disc menu and copying
+
+static void panel_box(int x, int y, int w, int h)
+{
+	gx_texture(NULL);
+	gx_quad(gx_left, 0, gx_right - gx_left, 480, rgba(0, 170));
+	gx_round_rect(x - 1, y - 1, w + 2, h + 2, 15, rgba(C_TEXT, 28));
+	gx_round_rect(x, y, w, h, 14, rgba(C_DIALOG, 255));
+}
+
+static const char *disc_option_name(int o)
+{
+	switch (o) {
+	case DISC_PLAY: return "Play disc";
+	case DISC_PLAY_SD: return "Play the SD card copy";
+	case DISC_COPY: return "Copy to SD card";
+	default: return "Cancel";
+	}
+}
+
+static const char *disc_option_sub(int o)
+{
+	switch (o) {
+	case DISC_PLAY: return "Starts the game from the drive";
+	case DISC_PLAY_SD: return "Already on the card: loads faster and quieter";
+	case DISC_COPY: return "Saves a 1.36 GB backup to games/ (about 15 min)";
+	default: return "";
+	}
+}
+
+static void disc_menu_panel(void)
+{
+	const int row_h = 46, w = 420, h = 96 + disc_option_count * row_h + 40, x = 320 - w / 2, y = 240 - h / 2;
+	panel_box(x, y, w, h);
+	gx_text_fit(FONT_19B, x + 22, y + 36, disc.title, rgba(C_TEXT, 255), w - 44);
+	char sub[96];
+	snprintf(sub, sizeof(sub), "%s \x03 %s \x03 Disc %d \x03 Version 1.%02d", disc.id, disc.region[0] ? disc.region : "Unknown region",
+		disc.disc_no + 1, disc.version);
+	gx_text(FONT_12, x + 22, y + 58, sub, rgba(C_DIM, 255));
+	for (int i = 0; i < disc_option_count; i++) {
+		int ry = y + 76 + i * row_h, o = disc_options[i];
+		bool on = i == disc_option;
+		if (on) {
+			gx_round_rect(x + 12, ry, w - 24, row_h - 4, 10, rgba(C_HL, 255));
+			gx_round_rect(x + 14, ry + 2, w - 28, row_h - 8, 8, rgba(C_DIALOG, 255));
+			gx_round_rect(x + 14, ry + 2, w - 28, row_h - 8, 8, rgba(C_HL, 40));
+		}
+		const char *s = disc_option_sub(o);
+		gx_text(FONT_15S, x + 28, s[0] ? ry + 19 : gfx_center_baseline(FONT_15S, ry + row_h / 2 - 2), disc_option_name(o), rgba(C_TEXT, 255));
+		if (s[0])
+			gx_text(FONT_12, x + 28, ry + 35, s, rgba(C_DIM, 255));
+	}
+	int hx = hint(x + 22, y + h - 22, "A", "Select");
+	hint(hx, y + h - 22, "B", "Close");
+}
+
+static void rip_panel(void)
+{
+	RipStatus st;
+	disc_rip_status(&st);
+	const int w = 460, h = 200, x = 320 - w / 2, y = 140;
+	panel_box(x, y, w, h);
+	const char *head = st.state == RIP_DONE ? "Copied to the SD card" : st.state == RIP_FAILED ? "Copy failed"
+		: st.state == RIP_CANCELLED ? "Copy stopped" : "Copying to the SD card...";
+	gx_text(FONT_19B, x + 22, y + 36, head, rgba(C_TEXT, 255));
+	gx_text_fit(FONT_13M, x + 22, y + 60, rip_title, rgba(C_DIM, 255), w - 44);
+
+	float frac = st.total ? (float)st.done / st.total : 0;
+	gx_round_rect(x + 22, y + 82, w - 44, 8, 4, rgba(C_TEXT, 32));
+	if (frac > 0)
+		gx_round_rect(x + 22, y + 82, (w - 44) * frac, 8, 4, rgba(st.state == RIP_FAILED ? C_ERROR : C_HL, 255));
+
+	char line[160], done[24], total[24];
+	format_size(done, sizeof(done), (u32)st.done);
+	format_size(total, sizeof(total), (u32)st.total);
+	if (st.state == RIP_RUNNING) {
+		float secs = ticks_to_millisecs(gettick() - st.started) / 1000.0f;
+		float speed = secs > 1 ? st.done / secs : 0;
+		if (speed > 0) {
+			u32 left = (u32)((st.total - st.done) / speed);
+			snprintf(line, sizeof(line), "%s of %s \x03 %.1f MB/s \x03 about %lu min left", done, total, speed / (1024 * 1024),
+				(unsigned long)(left / 60 + 1));
+		} else {
+			snprintf(line, sizeof(line), "%s of %s \x03 starting...", done, total);
+		}
+		gx_text(FONT_12, x + 22, y + 112, line, rgba(C_DIM, 255));
+		gx_text(FONT_12, x + 22, y + 132, "You can keep the console on its own: it doesn't need you.", rgba(C_DIM, 255));
+		hint(x + 22, y + h - 24, "B", rip_stop_frames > 0 ? "Press again to stop" : "Stop");
+	} else if (st.state == RIP_DONE) {
+		snprintf(line, sizeof(line), "Saved as %s", rip_target + 4);
+		gx_text_fit(FONT_12, x + 22, y + 112, line, rgba(C_DIM, 255), w - 44);
+		snprintf(line, sizeof(line), "CRC32 %08lX \x03 compare it on redump.org", (unsigned long)st.crc);
+		gx_text(FONT_12, x + 22, y + 132, line, rgba(C_DIM, 255));
+		int hx = hint(x + 22, y + h - 24, "A", "Play it");
+		hint(hx, y + h - 24, "B", "Close");
+	} else {
+		gx_text_fit(FONT_12, x + 22, y + 112, st.state == RIP_FAILED ? st.error : "The unfinished copy was removed.", rgba(C_DIM, 255), w - 44);
+		hint(x + 22, y + h - 24, "A", "OK");
+	}
+}
+
 static void game_info(void)
 {
 	const Game *g = &games[selected];
@@ -546,7 +675,17 @@ static void game_info(void)
 	char size[32], sub[160];
 	format_size(size, sizeof(size), g->size);
 	static const char *const kind_names[] = { "", "App", "Game Boy", "Game Boy Color", "Game Boy Advance", "Web page" };
-	if (g->is_disc && g->region[0])
+	if (g->kind == KIND_APP) {
+		const MediaFile *files;
+		bool music = !strcmp(g->path, "fml:music");
+		int n = library_media(music ? MEDIA_MUSIC : MEDIA_VIDEO, &files);
+		snprintf(sub, sizeof(sub), "Built-in app \x03 %d %s%s", n, music ? "song" : "video", n == 1 ? "" : "s");
+	} else if (g->kind == KIND_DRIVE) {
+		if (g->id[0])
+			snprintf(sub, sizeof(sub), "In the disc drive \x03 %s%s%s \x03 Disc %d", g->id, g->region[0] ? " \x03 " : "", g->region, g->disc_no + 1);
+		else
+			snprintf(sub, sizeof(sub), "In the disc drive");
+	} else if (g->is_disc && g->region[0])
 		snprintf(sub, sizeof(sub), "%s \x03 %s \x03 %s \x03 %s", g->id, g->region, g->folder[0] ? g->folder : "/", size);
 	else if (g->is_disc)
 		snprintf(sub, sizeof(sub), "%s \x03 %s \x03 %s", g->id, g->folder[0] ? g->folder : "/", size);
@@ -696,8 +835,9 @@ static void draw_ui(void)
 		}
 		if (screen != SCREEN_SEARCH) {
 			bool play = game_count > 0 && (games[selected].is_disc || is_gameboy(&games[selected]));
-			bool web = game_count > 0 && games[selected].kind == KIND_WEB;
-			int x = game_count > 0 ? hint(SL + MARGIN, hint_y, "A", web ? "Open" : play ? "Play" : "Start") : SL + MARGIN;
+			bool web = game_count > 0 && (games[selected].kind == KIND_WEB || games[selected].kind == KIND_APP);
+			bool drive = game_count > 0 && games[selected].kind == KIND_DRIVE;
+			int x = game_count > 0 ? hint(SL + MARGIN, hint_y, "A", drive ? "Options" : web ? "Open" : play ? "Play" : "Start") : SL + MARGIN;
 			x += button_glyph(x, hint_y, "L") + 4;
 			x = hint(x, hint_y, "R", "Tabs");
 			x = hint(x, hint_y, "Z", "Search");
@@ -715,6 +855,12 @@ static void draw_ui(void)
 
 	if (screen == SCREEN_VIDEO_CONFIRM)
 		video_confirm_panel();
+
+	if (screen == SCREEN_DISC_MENU)
+		disc_menu_panel();
+
+	if (screen == SCREEN_RIP)
+		rip_panel();
 
 	if (screen == SCREEN_ERROR) {
 		gx_texture(NULL);
@@ -762,6 +908,16 @@ static void render(void)
 {
 	if (screen == SCREEN_PAGE) {
 		render_page();
+		return;
+	}
+	if (screen == SCREEN_MUSIC || screen == SCREEN_MOVIES) {
+		gx_depth(false, false);
+		gx_blend(BLEND_ALPHA);
+		if (screen == SCREEN_MUSIC)
+			music_draw();
+		else
+			movie_draw();
+		gx_end_frame();
 		return;
 	}
 	scene_step(selected, screen == SCREEN_LAUNCH && fly_case);
@@ -820,6 +976,8 @@ static void loading_progress(int percent)
 
 static void before_jump(void)
 {
+	sound_stop();
+	disc_stop();
 	unmount();
 	GX_DrawDone();
 	GX_AbortFrame();
@@ -846,9 +1004,58 @@ static void open_page(const Game *g)
 	screen = SCREEN_PAGE;
 }
 
+static void open_disc_menu(void);
+
+// Starts a game through Swiss, told to autoload `autoload` ("Autoload=...").
+// Returns NULL if Swiss is missing (an error is shown), else why it failed.
+static const char *start_with_swiss(const char *autoload)
+{
+	const char *swiss = library_swiss_path();
+	if (!swiss) {
+		screen = SCREEN_HOME;
+		show_error("Swiss not found", "Put a swiss .dol on the SD card to play games.");
+		return NULL;
+	}
+	// CUBEBOOT=1 is the mode Swiss uses when another launcher starts it:
+	// no Swiss menus or info screen, straight into the game.
+	// Games follow the launcher's video: 480p when it's progressive, and
+	// Swiss's widescreen hack when it's switched on in Settings.
+	bool prog = gx_progressive();
+	const char *args[] = {
+		autoload, "AutoBoot=Yes",
+		prog ? "Force NTSC Video Mode=480p" : "Force NTSC Video Mode=480i",
+		prog ? "Force PAL Video Mode=576p" : "Force PAL Video Mode=576i",
+		game_wide ? "Force Widescreen=3D" : "Force Widescreen=No",
+		NULL,
+	};
+	const char *env[] = { "CUBEBOOT=1", NULL };
+	return boot_dol(swiss, args, env, loading_progress, before_jump);
+}
+
 static void launch(void)
 {
 	const Game *g = &games[selected];
+	if (g->kind == KIND_APP) {
+		library_played(g->path, (u32)time(NULL));
+		covers_reset(demo); // room for the player
+		if (!strcmp(g->path, "fml:music")) {
+			music_open();
+			screen = SCREEN_MUSIC;
+		} else {
+			movie_open();
+			screen = SCREEN_MOVIES;
+		}
+		return;
+	}
+	if (g->kind == KIND_DRIVE) {
+		if (disc.state == DISC_GAME)
+			open_disc_menu();
+		else if (disc.state == DISC_WII)
+			show_error("This is a Wii disc", "Wii games can't run on a GameCube.");
+		else if (disc.state == DISC_UNKNOWN)
+			show_error("This disc can't be read", "The drive only reads original GameCube discs.");
+		return;
+	}
 	if (g->kind == KIND_WEB) {
 		library_played(g->path, (u32)time(NULL));
 		open_page(g);
@@ -873,29 +1080,11 @@ static void launch(void)
 
 	const char *err;
 	if (g->is_disc) {
-		// Disc images are started by Swiss, told to autoload this game.
-		const char *swiss = library_swiss_path();
-		if (!swiss) {
-			screen = SCREEN_HOME;
-			show_error("Swiss not found", "Put a swiss .dol on the SD card to play games.");
-			return;
-		}
-		// CUBEBOOT=1 is the mode Swiss uses when another launcher starts it:
-		// no Swiss menus or info screen, straight into the game.
 		char autoload[300];
 		snprintf(autoload, sizeof(autoload), "Autoload=%s%s", devices[device].swiss_prefix, g->path + 4);
-		// Games follow the launcher's video: 480p when it's progressive, and
-		// Swiss's widescreen hack when it's switched on in Settings.
-		bool prog = gx_progressive();
-		const char *args[] = {
-			autoload, "AutoBoot=Yes",
-			prog ? "Force NTSC Video Mode=480p" : "Force NTSC Video Mode=480i",
-			prog ? "Force PAL Video Mode=576p" : "Force PAL Video Mode=576i",
-			game_wide ? "Force Widescreen=3D" : "Force Widescreen=No",
-			NULL,
-		};
-		const char *env[] = { "CUBEBOOT=1", NULL };
-		err = boot_dol(swiss, args, env, loading_progress, before_jump);
+		err = start_with_swiss(autoload);
+		if (!err)
+			return;
 	} else if (is_gameboy(g)) {
 		// Game Boy ROMs are started by Visual Boy Advance GX: argv[1] is the
 		// folder in its own device naming, argv[2] the file name.
@@ -925,6 +1114,7 @@ static void chain_progress(int percent)
 static void before_chain(void)
 {
 	// Keep the splash on screen while the other copy starts
+	sound_stop();
 	unmount();
 	GX_DrawDone();
 	GX_AbortFrame();
@@ -987,6 +1177,131 @@ static void open_swiss(void)
 	show_error("Couldn't start Swiss", err);
 }
 
+// ---------------------------------------------------------------- the disc drive
+
+// Shows the disc in the drive (or takes it off the shelf) when it changes
+static void update_drive(void)
+{
+	static u32 seen;
+	DiscInfo d;
+	u32 changed = disc_get(&d);
+	if (changed == seen)
+		return;
+	seen = changed;
+	bool was = disc.state != DISC_NONE;
+	disc = d;
+	if (d.state == DISC_NONE) {
+		library_set_drive(NULL);
+	} else {
+		Game g;
+		memset(&g, 0, sizeof(g));
+		strcpy(g.path, "dvd:");
+		g.kind = KIND_DRIVE;
+		if (d.state == DISC_GAME) {
+			snprintf(g.title, sizeof(g.title), "%s", d.title);
+			strcpy(g.id, d.id);
+			strcpy(g.key, d.id);
+			snprintf(g.region, sizeof(g.region), "%s", d.region);
+			g.disc_no = d.disc_no;
+			g.size = (u32)DISC_SIZE;
+		} else {
+			strcpy(g.title, d.state == DISC_READING ? "Reading disc..." : d.state == DISC_WII ? "Wii disc" : "Unreadable disc");
+		}
+		library_set_drive(&g);
+	}
+	if (screen == SCREEN_DISC_MENU && d.state != DISC_GAME)
+		screen = SCREEN_HOME;
+	if (screen == SCREEN_NO_CARD || screen == SCREEN_SEARCHING || screen == SCREEN_LAUNCH)
+		return;
+	apply_filter();
+	// A disc that was just put in slides into view
+	if (!was && d.state != DISC_NONE && screen == SCREEN_HOME && game_count > 0 && games[0].kind == KIND_DRIVE)
+		selected = 0;
+}
+
+static void open_disc_menu(void)
+{
+	disc_option_count = 0;
+	disc_options[disc_option_count++] = DISC_PLAY;
+	disc_options[disc_option_count++] = library_find_disc(disc.id, disc.disc_no) ? DISC_PLAY_SD : DISC_COPY;
+	disc_options[disc_option_count++] = DISC_CANCEL;
+	disc_option = 0;
+	screen = SCREEN_DISC_MENU;
+}
+
+// "Super Smash Bros. Melee [GALE01].iso", without characters FAT can't store
+static void rip_file_name(char *out, size_t n)
+{
+	char safe[64];
+	int o = 0;
+	for (const char *p = disc.title; *p && o < 56; p++)
+		safe[o++] = strchr("\\/:*?\"<>|", *p) ? ' ' : *p;
+	while (o > 0 && (safe[o - 1] == ' ' || safe[o - 1] == '.'))
+		o--;
+	safe[o] = 0;
+	if (disc.disc_no)
+		snprintf(out, n, "sd:/games/%s [%s] (Disc %d).iso", safe[0] ? safe : disc.id, disc.id, disc.disc_no + 1);
+	else
+		snprintf(out, n, "sd:/games/%s [%s].iso", safe[0] ? safe : disc.id, disc.id);
+}
+
+static void start_copy(void)
+{
+	if (demo || device < 0) {
+		show_error("No SD card", "Copying needs an SD card (this is the demo card).");
+		return;
+	}
+	rip_file_name(rip_target, sizeof(rip_target));
+	snprintf(rip_title, sizeof(rip_title), "%s", disc.title);
+	struct stat st;
+	if (stat(rip_target, &st) == 0) {
+		show_error("Already on the card", "A file with this game's name is in games/.");
+		return;
+	}
+	struct statvfs fs;
+	if (statvfs("sd:/", &fs) == 0 && (u64)fs.f_bfree * fs.f_bsize < DISC_SIZE + 4 * 1024 * 1024) {
+		show_error("Not enough space", "Copying a disc needs 1.4 GB free on the SD card.");
+		return;
+	}
+	mkdir("sd:/games", 0777);
+	if (!disc_rip_start(rip_target)) {
+		show_error("Couldn't start copying", "Take the disc out and put it back in.");
+		return;
+	}
+	music_stop(); // the card is busy enough
+	rip_stop_frames = 0;
+	screen = SCREEN_RIP;
+}
+
+static void play_drive_disc(void)
+{
+	if (demo) {
+		show_error("Demo mode", "Swiss would start the disc here on a real SD card.");
+		return;
+	}
+	screen = SCREEN_LAUNCH;
+	loading_name = disc.title;
+	fly_case = true;
+	load_percent = 0;
+	for (int i = 0; i < 25; i++)
+		render();
+	// Swiss lists the disc as "dvd:/<name> [GAMEID].gcm"
+	char autoload[64];
+	snprintf(autoload, sizeof(autoload), "Autoload=dvd:/*?%s?.gcm", disc.id);
+	const char *err = start_with_swiss(autoload);
+	if (err) {
+		screen = SCREEN_HOME;
+		show_error("Couldn't start Swiss", err);
+	}
+}
+
+// Reads the card again after a copy, keeping the tab and search
+static void refresh_library(void)
+{
+	library_scan();
+	apply_filter();
+}
+
 // ---------------------------------------------------------------- main
 
 int main(int argc, char **argv)
@@ -1025,6 +1340,7 @@ int main(int argc, char **argv)
 	force_demo |= device < 0; // `make DEMO=1`: straight to the demo card in Dolphin
 #endif
 	demo = force_demo;
+	disc_init();
 	PAD_ScanPads();
 	force_480i |= (PAD_ButtonsHeld(0) & PAD_BUTTON_B) != 0;
 	load_settings();
@@ -1051,11 +1367,97 @@ int main(int argc, char **argv)
 
 	int repeat = 0;
 	for (;;) {
+		update_drive();
+		music_tick();
 		render();
 
 		PAD_ScanPads();
 		u32 down = PAD_ButtonsDown(0), held = PAD_ButtonsHeld(0);
 		s8 stick = PAD_StickX(0);
+
+		if (screen == SCREEN_MUSIC) {
+			if (!music_input(down, held)) {
+				xp_free();
+				screen = SCREEN_HOME;
+			}
+			continue;
+		}
+
+		if (screen == SCREEN_MOVIES) {
+			if (!movie_input(down, held)) {
+				movie_close();
+				xp_free();
+				screen = SCREEN_HOME;
+			}
+			continue;
+		}
+
+		if (screen == SCREEN_DISC_MENU) {
+			s8 sy = PAD_StickY(0);
+			static bool moved;
+			int move = 0;
+			if (down & PAD_BUTTON_UP) move = -1;
+			if (down & PAD_BUTTON_DOWN) move = 1;
+			if (!moved && (sy > 60 || sy < -60))
+				move = sy > 0 ? -1 : 1;
+			moved = sy > 60 || sy < -60;
+			disc_option = (disc_option + move + disc_option_count) % disc_option_count;
+			if (down & PAD_BUTTON_B) {
+				screen = SCREEN_HOME;
+			} else if (down & PAD_BUTTON_A) {
+				int o = disc_options[disc_option];
+				screen = SCREEN_HOME;
+				if (o == DISC_PLAY) {
+					play_drive_disc();
+				} else if (o == DISC_COPY) {
+					start_copy();
+				} else if (o == DISC_PLAY_SD) {
+					const Game *copy = library_find_disc(disc.id, disc.disc_no);
+					for (int i = 0; copy && i < game_count; i++)
+						if (!strcmp(games[i].path, copy->path)) {
+							selected = i;
+							launch();
+							break;
+						}
+				}
+			}
+			continue;
+		}
+
+		if (screen == SCREEN_RIP) {
+			RipStatus st;
+			disc_rip_status(&st);
+			if (rip_stop_frames > 0)
+				rip_stop_frames--;
+			if (st.state == RIP_RUNNING) {
+				if (down & PAD_BUTTON_B) {
+					if (rip_stop_frames > 0)
+						disc_rip_cancel();
+					else
+						rip_stop_frames = 180;
+				}
+			} else if (st.state == RIP_DONE) {
+				if (down & (PAD_BUTTON_A | PAD_BUTTON_B)) {
+					disc_rip_clear();
+					screen = SCREEN_HOME;
+					refresh_library();
+					if (down & PAD_BUTTON_A) {
+						const Game *copy = library_find_disc(disc.id, disc.disc_no);
+						for (int i = 0; copy && i < game_count; i++)
+							if (!strcmp(games[i].path, copy->path)) {
+								selected = i;
+								scene_snap(i);
+								launch();
+								break;
+							}
+					}
+				}
+			} else if (down & (PAD_BUTTON_A | PAD_BUTTON_B)) {
+				disc_rip_clear();
+				screen = SCREEN_HOME;
+			}
+			continue;
+		}
 
 		if (screen == SCREEN_ERROR) {
 			if (down & (PAD_BUTTON_A | PAD_BUTTON_B))
@@ -1173,6 +1575,8 @@ int main(int argc, char **argv)
 					search_card(device < 0 ? 0 : device + 1);
 					load_library();
 				} else {
+					sound_stop();
+					disc_stop();
 					unmount();
 					SYS_ResetSystem(SYS_HOTRESET, 0, 0);
 				}
@@ -1227,6 +1631,8 @@ int main(int argc, char **argv)
 				apply_filter();
 		}
 		if (down & PAD_BUTTON_START) {
+			sound_stop();
+			disc_stop();
 			unmount();
 			SYS_ResetSystem(SYS_HOTRESET, 0, 0);
 		}

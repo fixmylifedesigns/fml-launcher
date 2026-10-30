@@ -24,6 +24,16 @@ from Settings (Y).
 - Updates without reflashing: if `fml/launcher.dol` on the card is a different build, the
   launcher in the Pico runs it instead. Copy a new `cubelaunch.dol` there to update.
 - Boot video streamed from `fml/splash.fmv`.
+- Disc drive: an original GameCube disc in the drive shows up first on the shelf. Press A for
+  **Play disc** (started through Swiss with your video settings), **Copy to SD card** (a full
+  1.36 GB backup to `games/<Title> [GAMEID].iso`, with a CRC32 to check on redump.org), or
+  **Play the SD card copy** once it's there. Copies are written as `.part` and only renamed
+  when complete.
+- Music Player app (Apps tab): plays `.mp3` files from anywhere on the card in a Windows XP
+  media player style window: playlist, ID3 tags, frequency bars, shuffle, repeat, seek and
+  volume. Music keeps playing on the shelf after you close it.
+- Movie Player app: plays MPEG-1 `.mpg` videos with sound. Other formats are listed as
+  "needs converting": run `python tools/make_movie.py video.mp4` (needs ffmpeg) to make one.
 
 ## Controls
 | Button | Action |
@@ -39,6 +49,10 @@ from Settings (Y).
 | Hold B while starting | Force 480i (if 480p shows no picture) |
 | Hold Z while starting | Debug: open the demo card even with an SD card in |
 | Y on "No SD card" | Demo mode |
+
+Music Player: A play/pause, L / R previous/next song, C-stick left-right seek, C-stick up-down
+volume, X shuffle, Y repeat, Z stop, B back to the shelf (the music keeps playing).
+Movie Player: A play/pause, L / R skip 30 s, C-stick (or stick / D-pad) seek and volume, B back.
 
 ## Covers
 Each game shows the best art it has:
@@ -94,7 +108,11 @@ Ready-made builds are on the [releases page](https://github.com/fixmylifedesigns
 - `source/main.c`: screens, input, UI layout and theme colours, launching.
 - `source/scene.c`: the 3D carousel (case geometry, layout, easing, reflections, floor).
 - `source/covers.c`: loads `.cov` files, generates covers and reads disc banners.
-- `source/library.c`: SD scanning and the demo card.
+- `source/library.c`: SD scanning (games, music and videos) and the demo card.
+- `source/disc.c`: disc drive thread: detects discs and copies them to the card.
+- `source/music.c`, `source/movie.c`, `source/xpui.c`: the music and movie players and their
+  XP-style look. `source/plm.c` builds `pl_mpeg.h` (MIT, phoboslab) for MPEG-1 decoding.
+- `tools/make_movie.py` converts any video to the `.mpg` the movie player plays.
 - `source/boot.c` + `stub.S`: loads a DOL, passes argv (for Swiss autoload) and jumps to it.
 - `source/gx.c`: GPU setup, textures, GPU text (font atlas) and rounded shapes.
 - `source/gfx.c`: software drawing, used for the background and generated covers.

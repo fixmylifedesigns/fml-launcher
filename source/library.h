@@ -7,7 +7,9 @@
 // Game Boy ROMs, found in any folder. games[] is the list currently shown,
 // after the tab and search filters.
 
-enum { KIND_DISC, KIND_DOL, KIND_GB, KIND_GBC, KIND_GBA, KIND_WEB };
+// KIND_APP: built into the launcher (music and movie players).
+// KIND_DRIVE: the disc in the GameCube's own drive.
+enum { KIND_DISC, KIND_DOL, KIND_GB, KIND_GBC, KIND_GBA, KIND_WEB, KIND_APP, KIND_DRIVE };
 
 typedef struct {
 	char path[256];  // "sd:/games/Melee.iso"
@@ -19,6 +21,7 @@ typedef struct {
 	u32 size;
 	u8 kind;
 	bool is_disc;
+	u8 disc_no;      // discs: 0 = disc 1, 1 = disc 2
 	// Play history, from sd:/fml/history.txt
 	bool fav;
 	u16 plays;
@@ -54,5 +57,26 @@ const char *library_vba_path(void);
 void library_played(const char *path, u32 now);
 bool library_toggle_fav(const char *path); // returns the new state
 const Game *library_last_played(void);     // NULL if nothing was played yet
+
+// "Japan", "USA"... from the 4th letter of a GameCube game ID ("" if unknown)
+const char *region_from_id(char c);
+
+// The disc in the drive, shown first in the All and GameCube tabs (NULL = none).
+// Call library_filter again afterwards.
+void library_set_drive(const Game *g);
+// The disc image on the card with this ID and disc number, or NULL
+const Game *library_find_disc(const char *id, int disc_no);
+
+// Music and video files on the card. They aren't shown on the shelf: the
+// built-in players list them.
+enum { MEDIA_MUSIC, MEDIA_VIDEO, MEDIA_TYPES };
+typedef struct {
+	char path[256];
+	u32 size;
+	bool playable; // videos: MPEG-1 (.mpg); other formats need converting first
+} MediaFile;
+int library_media(int type, const MediaFile **list);
+// The demo card's music and video live in the program itself
+bool library_demo_file(const char *path, const u8 **data, u32 *size);
 
 #endif

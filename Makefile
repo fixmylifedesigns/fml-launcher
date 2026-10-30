@@ -18,14 +18,14 @@ INCLUDES	:=	source
 CFLAGS		=	-O2 -Wall $(MACHDEP) $(INCLUDE)
 ifneq ($(DEMO),)
 CFLAGS		+=	-DSTART_DEMO
-# The demo build carries the boot video itself, since Dolphin has no SD card
+# The demo build carries the boot video, a song and a video itself, since Dolphin has no SD card
 DATA		:=	data
 endif
 CXXFLAGS	=	$(CFLAGS)
 ASFLAGS		=	$(MACHDEP)
 LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
 
-LIBS		:=	-lfat -logc -lm
+LIBS		:=	-lfat -lmad -lasnd -logc -lm
 LIBDIRS		:=
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
@@ -36,7 +36,7 @@ export DEPSDIR	:=	$(CURDIR)/$(BUILD)
 
 CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
 SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.S)))
-BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.fmv) $(wildcard $(dir)/*.fpg)))
+BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.fmv) $(wildcard $(dir)/*.fpg) $(wildcard $(dir)/*.mp3) $(wildcard $(dir)/*.mpg)))
 
 export LD	:=	$(CC)
 export OFILES	:=	$(addsuffix .o,$(BINFILES)) $(CFILES:.c=.o) $(SFILES:.S=.o)
@@ -71,6 +71,14 @@ $(OUTPUT).elf: $(OFILES)
 	@$(bin2o)
 
 %.fpg.o %_fpg.h : %.fpg
+	@echo $(notdir $<)
+	@$(bin2o)
+
+%.mp3.o %_mp3.h : %.mp3
+	@echo $(notdir $<)
+	@$(bin2o)
+
+%.mpg.o %_mpg.h : %.mpg
 	@echo $(notdir $<)
 	@$(bin2o)
 

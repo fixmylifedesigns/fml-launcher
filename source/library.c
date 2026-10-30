@@ -20,8 +20,17 @@ static char swiss_path[256], vba_path[256];
 static bool demo_card; // history stays in memory
 
 #define CACHE_PATH "sd:/fml/library.cache"
-#define CACHE_MAGIC 0x464D4C32 // "FML2" (FML1 had no disc regions)
+#define CACHE_MAGIC 0x464D4C33 // "FML3" (FML2 had no disc numbers)
 #define HISTORY_PATH "sd:/fml/history.txt"
+
+// Music and video files
+#define MAX_MEDIA 1024
+static MediaFile *media[MEDIA_TYPES];
+static int media_count[MEDIA_TYPES];
+
+// The disc in the drive
+static Game drive;
+static bool has_drive;
 
 // Last scan's results, so known files aren't opened again
 static Game *cache;
@@ -69,20 +78,26 @@ static void base_name(char *out, size_t n, const char *name)
 		*dot = 0;
 }
 
+const char *region_from_id(char c)
+{
+	switch (c) {
+	case 'J': return "Japan";
+	case 'E': return "USA";
+	case 'P': return "Europe";
+	case 'D': return "Germany";
+	case 'F': return "France";
+	case 'S': return "Spain";
+	case 'I': return "Italy";
+	case 'U': return "Australia";
+	case 'K': return "Korea";
+	default: return "";
+	}
+}
+
 // Region of a disc: the 4th letter of its game ID
 static void disc_region(Game *g)
 {
-	switch (g->id[3]) {
-	case 'J': strcpy(g->region, "Japan"); break;
-	case 'E': strcpy(g->region, "USA"); break;
-	case 'P': strcpy(g->region, "Europe"); break;
-	case 'D': strcpy(g->region, "Germany"); break;
-	case 'F': strcpy(g->region, "France"); break;
-	case 'S': strcpy(g->region, "Spain"); break;
-	case 'I': strcpy(g->region, "Italy"); break;
-	case 'U': strcpy(g->region, "Australia"); break;
-	case 'K': strcpy(g->region, "Korea"); break;
-	}
+	snprintf(g->region, sizeof(g->region), "%s", region_from_id(g->id[3]));
 }
 
 // Reads the game ID and internal title from a disc image header.
@@ -101,6 +116,7 @@ static bool read_disc(Game *g)
 			return false;
 	memcpy(g->id, head, 6);
 	g->id[6] = 0;
+	g->disc_no = head[6];
 	strcpy(g->key, g->id);
 
 	// Use the disc's own title when it is plain ASCII (Japanese discs often aren't)
@@ -122,6 +138,60 @@ static bool is_swiss(const char *name)
 static bool is_vba(const char *name)
 {
 	return strcasestr(name, "vbagx") || strcasestr(name, "visualboyadvance");
+}
+
+static void add_media(int type, const char *path, u32 size, bool playable)
+{
+	if (!media[type])
+		media[type] = malloc(MAX_MEDIA * sizeof(MediaFile));
+	if (!media[type] || media_count[type] >= MAX_MEDIA || strlen(path) >= sizeof(media[type][0].path))
+		return;
+	MediaFile *m = &media[type][media_count[type]++];
+	snprintf(m->path, sizeof(m->path), "%s", path);
+	m->size = size;
+	m->playable = playable;
+}
+
+// MEDIA_* for music and video files, else -1
+static int media_of(const char *name, bool *playable)
+{
+	*playable = true;
+	if (has_ext(name, ".mp3"))
+		return MEDIA_MUSIC;
+	if (has_ext(name, ".mpg") || has_ext(name, ".mpeg"))
+		return MEDIA_VIDEO;
+	static const char *const other[] = { ".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm", ".wmv" };
+	for (size_t i = 0; i < sizeof(other) / sizeof(other[0]); i++)
+		if (has_ext(name, other[i])) {
+			*playable = false;
+			return MEDIA_VIDEO;
+		}
+	return -1;
+}
+
+static int compare_media(const void *a, const void *b)
+{
+	const char *pa = ((const MediaFile *)a)->path, *pb = ((const MediaFile *)b)->path;
+	return strcasecmp(strrchr(pa, '/') + 1, strrchr(pb, '/') + 1);
+}
+
+static void reset_media(void)
+{
+	for (int t = 0; t < MEDIA_TYPES; t++)
+		media_count[t] = 0;
+}
+
+static void sort_media(void)
+{
+	for (int t = 0; t < MEDIA_TYPES; t++)
+		if (media_count[t])
+			qsort(media[t], media_count[t], sizeof(MediaFile), compare_media);
+}
+
+int library_media(int type, const MediaFile **list)
+{
+	*list = media[type];
+	return media_count[type];
 }
 
 static int kind_of(const char *name)
@@ -279,8 +349,16 @@ static void scan_dir(const char *dir, int depth)
 			continue;
 		}
 		int kind = kind_of(name);
-		if (kind >= 0)
+		if (kind >= 0) {
 			add_entry(path, kind, -1, NULL, depth == 0);
+			continue;
+		}
+		bool playable;
+		int type = media_of(name, &playable);
+		if (type >= 0) {
+			struct stat st;
+			add_media(type, path, stat(path, &st) == 0 ? st.st_size : 0, playable);
+		}
 	}
 	closedir(d);
 }
@@ -414,6 +492,23 @@ const Game *library_last_played(void)
 	return best;
 }
 
+// The players built into the launcher
+static void add_apps(void)
+{
+	static const struct { const char *path, *title, *key; } apps[] = {
+		{ "fml:music", "Music Player", "fml-music" },
+		{ "fml:movies", "Movie Player", "fml-movies" },
+	};
+	for (size_t i = 0; i < sizeof(apps) / sizeof(apps[0]) && all_count < MAX_GAMES; i++) {
+		Game *g = &all_games[all_count++];
+		memset(g, 0, sizeof(*g));
+		strcpy(g->path, apps[i].path);
+		strcpy(g->title, apps[i].title);
+		strcpy(g->key, apps[i].key);
+		g->kind = KIND_APP;
+	}
+}
+
 static int compare_games(const void *a, const void *b)
 {
 	return strcasecmp(((const Game *)a)->title, ((const Game *)b)->title);
@@ -430,6 +525,7 @@ void library_scan(void)
 	all_count = 0;
 	swiss_path[0] = vba_path[0] = 0;
 	demo_card = false;
+	reset_media();
 	load_cache();
 	cache_hits = 0;
 	cache_dirty = false;
@@ -440,6 +536,8 @@ void library_scan(void)
 	free(cache);
 	cache = NULL;
 	cache_count = 0;
+	add_apps();
+	sort_media();
 	load_history();
 	finish_scan();
 }
@@ -455,19 +553,26 @@ static bool in_tab(const Game *g, int tab)
 	switch (tab) {
 	case TAB_RECENT: return g->last != 0;
 	case TAB_FAVS: return g->fav;
-	case TAB_GAMECUBE: return g->kind == KIND_DISC;
+	case TAB_GAMECUBE: return g->kind == KIND_DISC || g->kind == KIND_DRIVE;
 	case TAB_GAMEBOY: return is_gameboy(g);
-	case TAB_APPS: return g->kind == KIND_DOL || g->kind == KIND_WEB;
+	case TAB_APPS: return g->kind == KIND_DOL || g->kind == KIND_WEB || g->kind == KIND_APP;
 	default: return true;
 	}
+}
+
+static bool matches(const Game *g, int tab, const char *query)
+{
+	return in_tab(g, tab) && (!query[0] || strcasestr(g->title, query) || (g->region[0] && strcasestr(g->region, query)));
 }
 
 void library_filter(int tab, const char *query)
 {
 	game_count = 0;
+	if (has_drive && (tab == TAB_ALL || tab == TAB_GAMECUBE) && matches(&drive, tab, query))
+		games[game_count++] = drive;
 	for (int i = 0; i < all_count; i++) {
 		const Game *g = &all_games[i];
-		if (in_tab(g, tab) && (!query[0] || strcasestr(g->title, query) || (g->region[0] && strcasestr(g->region, query))))
+		if (game_count < MAX_GAMES && matches(g, tab, query))
 			games[game_count++] = *g;
 	}
 	if (tab == TAB_RECENT) // newest first
@@ -477,6 +582,21 @@ void library_filter(int tab, const char *query)
 int library_total(void)
 {
 	return all_count;
+}
+
+void library_set_drive(const Game *g)
+{
+	has_drive = g != NULL;
+	if (g)
+		drive = *g;
+}
+
+const Game *library_find_disc(const char *id, int disc_no)
+{
+	for (int i = 0; i < all_count; i++)
+		if (all_games[i].kind == KIND_DISC && !strcmp(all_games[i].id, id) && all_games[i].disc_no == disc_no)
+			return &all_games[i];
+	return NULL;
 }
 
 // ---------------------------------------------------------------- demo card
@@ -513,15 +633,57 @@ static const DemoGame demo_games[] = {
 	{ "sd:/roms/gb/Tetris (World) (Rev 1).gb", NULL, 32768 },
 };
 
+// Music and videos on the demo card. The first of each kind is built into
+// `make DEMO=1` builds so the players can be tried in Dolphin.
+static const char *const demo_media[] = {
+	"sd:/music/FML - Shelf Theme.mp3",
+	"sd:/music/Chinito Sushi - Main Theme.mp3",
+	"sd:/music/MuiThai3D - Fight Night.mp3",
+	"sd:/music/PicoLoader - Boot Jingle.mp3",
+	"sd:/videos/FML Launcher Tour.mpg",
+	"sd:/videos/Holiday 2004.mp4",
+};
+
+bool library_demo_file(const char *path, const u8 **data, u32 *size)
+{
+#ifdef START_DEMO
+	extern const u8 demo_song_mp3[], demo_song_mp3_end[], demo_movie_mpg[], demo_movie_mpg_end[];
+	if (!strcmp(path, demo_media[0])) {
+		*data = demo_song_mp3;
+		*size = demo_song_mp3_end - demo_song_mp3;
+		return true;
+	}
+	if (!strcmp(path, demo_media[4])) {
+		*data = demo_movie_mpg;
+		*size = demo_movie_mpg_end - demo_movie_mpg;
+		return true;
+	}
+#endif
+	(void)path;
+	*data = NULL;
+	*size = 0;
+	return false;
+}
+
 void library_demo(void)
 {
 	all_count = 0;
 	swiss_path[0] = vba_path[0] = 0;
 	demo_card = true;
+	reset_media();
 	for (size_t i = 0; i < sizeof(demo_games) / sizeof(demo_games[0]); i++) {
 		const DemoGame *d = &demo_games[i];
 		add_entry(d->path, kind_of(d->path), d->size, d->id, strchr(d->path + 4, '/') == NULL);
 	}
+	add_apps();
+	for (size_t i = 0; i < sizeof(demo_media) / sizeof(demo_media[0]); i++) {
+		bool playable;
+		const u8 *data;
+		u32 size = 0;
+		library_demo_file(demo_media[i], &data, &size);
+		add_media(media_of(demo_media[i], &playable), demo_media[i], size ? size : 4500000, playable);
+	}
+	sort_media();
 	finish_scan();
 }
 
