@@ -66,7 +66,15 @@ Each game shows the best art it has:
 2. Otherwise, a generated cover in a colour picked from the name. Discs show their built-in
    banner on it; homebrew shows its initials.
 
-Make `.cov` files on your PC with `tools/covers.py` (needs Python and Pillow):
+The easy way is the **FML Cover Art** app for Windows (`tools/cover_art_app.py`; build
+`FML Cover Art.exe` with `tools/build_cover_art_app.bat`). Pick the SD card and it lists every
+game, app, web page and music album, with its cover. Search online (GameTDB for discs,
+libretro-thumbnails for Game Boy games, iTunes or MusicBrainz for albums) or use your own
+images (choose a file or paste from the clipboard), check the preview and save. Album covers
+are saved as a 600 px `folder.jpg` next to the songs. Replaced covers are kept in `covers/old/`.
+"Get all missing game covers" downloads art for every disc and Game Boy game without one.
+
+Or make `.cov` files from the command line with `tools/covers.py` (needs Python and Pillow):
 
 ```
 python tools/covers.py fetch E:\                  # every game on the card, from GameTDB
